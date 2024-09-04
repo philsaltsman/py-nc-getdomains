@@ -44,11 +44,13 @@ app_defaults = {
 cfg_app = app_config.get('App', {})
 cfg_getDomains = app_config.get('getDomains', {})
 cachefile = cfg_getDomains.get('cachefile') 
+cachetime = cfg_getDomains.get('cachetime')
+last_performed = cfg_getDomains.get('lastperformed')
 username = app_config.get('Namecheap', {}).get('username')
 apikey = app_config.get('Namecheap', {}).get('apikey')
 ipaddr = app_config.get('Client', {}).get('ipaddr')
 
-def dprint(_content, _debug=cfg_app['debug']):
+def dprint(_content, _debug=cfg_app.get('debug')):
     if (_content and type(_content)==str and _debug):
         print(_content)
 
@@ -56,7 +58,7 @@ def prefill(str_in):
     return f' ({str_in})' if str_in and type(str_in) == str else ''
 
 prompted = False
-if not username or username == app_defaults['Namecheap']['username']:
+if not username or username == app_defaults.get('Namecheap', {}).get('username'):
     prompted = True
     invalid = True
     while invalid:
@@ -64,7 +66,7 @@ if not username or username == app_defaults['Namecheap']['username']:
         username = username if not user_name and username else user_name
         if username: invalid = False
 
-if not apikey or apikey == app_defaults['Namecheap']['apikey']:
+if not apikey or apikey == app_defaults.get('Namecheap', {}).get('apikey'):
     prompted = True
     invalid = True
     while invalid:
@@ -73,7 +75,7 @@ if not apikey or apikey == app_defaults['Namecheap']['apikey']:
         if apikey: invalid = False
 
 if prompted:
-    if not ipaddr or ipaddr == app_defaults['Client']['ipaddr'] or ipaddr != app_config['Client']['ipaddr']:
+    if not ipaddr or ipaddr == app_defaults.get('Client', {}).get('ipaddr') or ipaddr != app_config.get('Client', {}).get('ipaddr'):
         invalid = True
         while invalid:
             prefilled=prefill(ipaddr)
@@ -99,11 +101,10 @@ if prompted:
             quit()
 
 
-last_performed = app_config['getDomains']['lastperformed']
 date_time_now = datetime.datetime.now()
 difference_s = (date_time_now - last_performed).total_seconds()
-usecachefile = cfg_app['uselocal'] or difference_s < cfg_getDomains['cachetime']
-dprint(f'\nusecachefile: {usecachefile} ({difference_s}/{cfg_getDomains["cachetime"]})\n')
+usecachefile = cfg_app.get('uselocal') or difference_s < cachetime
+dprint(f'\nusecachefile: {usecachefile} ({difference_s}/{cachetime})\n')
 
 if not usecachefile:
     # Write changes back to the file
@@ -116,10 +117,10 @@ def genApiUrl(
     _apikey=apikey, 
     _ipaddr=ipaddr,
     _username=username, 
-    _apidomain=cfg_getDomains['apidomain'],
-    _page=cfg_getDomains['page'],
-    _pagesize=cfg_getDomains['pagesize'],
-    _sortby=cfg_getDomains['sortby']
+    _apidomain=cfg_getDomains.get('apidomain'),
+    _page=cfg_getDomains.get('page'),
+    _pagesize=cfg_getDomains.get('pagesize'),
+    _sortby=cfg_getDomains.get('sortby')
 ):
     outStr=''
     if (_apicommand and _apikey and _ipaddr and _username and _apidomain):
@@ -146,9 +147,9 @@ def genApiUrl(
     return outStr if outStr else None
 
 def getDomains(
-    _fromLocal=cfg_app['uselocal'] or False,
-    _colKeys=cfg_getDomains['colKeys'],
-    _apicommand=cfg_getDomains['apicommand']
+    _fromLocal=cfg_app.get('uselocal', False),
+    _colKeys=cfg_getDomains.get('colKeys', []),
+    _apicommand=cfg_getDomains.get('apicommand', '')
 ):
     jsonResponse = None
     if (not _fromLocal or not cachefile):
@@ -204,13 +205,13 @@ def getDomains(
         loadedJson = json.loads(jsonResponse)
         domainArr = None
         try:
-            api_response = loadedJson['ApiResponse']
-            status = api_response['@Status']
+            api_response = loadedJson.get('ApiResponse', {})
+            status = api_response.get('@Status')
             if status == 'ERROR':
                 print(f'\nResponse: {json.dumps(api_response)}\n')
                 return -1
             else:
-                domainArr = api_response['CommandResponse']['DomainGetListResult']['Domain']
+                domainArr = api_response.get('CommandResponse', {}).get('DomainGetListResult', {}).get('Domain')
         except:
             print('Error loading domain data')
             return -1
@@ -246,7 +247,7 @@ if (type(domainsArr == list) and domainsArr):
                 if (x and type(x) == str):
                     output.append(x[1:])
         return output
-    print(tabulate(domainsArr, headers=formatKeys(cfg_getDomains['colKeys'])))
+    print(tabulate(domainsArr, headers=formatKeys(cfg_getDomains.get('colKeys'))))
     
     print('')
 else:
