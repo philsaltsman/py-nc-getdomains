@@ -5,33 +5,19 @@
 # https://www.namecheap.com/support/api/methods/domains/get-list/
 #
 
-import xmltodict, json, os
-import requests
-# import math
+import datetime, json, os, pathlib, requests, xmltodict
 from tabulate import tabulate
 from requests.exceptions import HTTPError
-import pathlib
-import configparser
+from helpers import config_init, get_public_ip
 
 config_file = './.config.ini'       # Configuration file
+public_ip = get_public_ip()         # Get public ip
 
-def get_public_ip():
-    try:
-        response = requests.get('https://api.ipify.org')
-        public_ip = response.text.strip()
-        return public_ip
-    except requests.RequestException as e:
-        print(f"Error: {e}")
-        return None
-
-public_ip = get_public_ip()
-
-
-app_config = {
+app_defaults = {
     'App': {
         'debug': False,                         # Enable to display verbose printouts
-        'useLocal': False,                      # For debugging if wanting to avoid many calls - add last call logic
-        'localFile': 'getDomainsOutput.txt'     # getDomains call to output here
+        'uselocal': False,                      # For debugging if wanting to avoid many calls - add last call logic
+        'datetimeformat': '%Y-%m-%d %H:%M:%S'.replace('%','%%')     # Needed for configparser interpolation
     },
     'Namecheap': {
         'username': 'NAMECHEAP_USERNAME',		# Namecheap username
@@ -41,85 +27,60 @@ app_config = {
         'ipaddr': public_ip or 'YOUR_IP_ADDRESSHERE'    # Must be whitelisted (Namecheap => Profile => Tools => Business and app)
     },
     'getDomains': {
-        'apidomain': 'api.namecheap.com',
+        'apidomain': 'api.namecheap.com',           # Api url
+        'apicommand': 'namecheap.domains.getList',  # Api command for getDomains
+        'cachefile': 'getDomainsOutput.json',   # getDomains call to output here
+        'cachetime': 240,                       # Time between calls in seconds
+        'lastperformed': datetime.datetime.fromtimestamp(0),                     # Time last performed
         'page': 1,						        # default 1
         'pagesize': 100,					    # 0-100, default 20
         'sortby': 'EXPIREDATE',				    # default not set, maybe NAME : Possible values are NAME, NAME_DESC, EXPIREDATE, EXPIREDATE_DESC, CREATEDATE, CREATEDATE_DESC
-        'colKeys': ['@Name','@Expires','@IsExpired','@AutoRenew','@WhoisGuard','@IsOurDNS']	# Columns to pull
+        'colKeys': ['@Name','@Expires','@IsExpired','@AutoRenew','IsOurDNS','@WhoisGuard']	# Columns to pull
     }
 }
-app_vals = {}
+[config, app_config] = config_init(config_file, app_defaults)
 
-# Create config file if doesn't exist
-if not os.path.isfile(config_file):
-    path = pathlib.Path(config_file)
-    path.touch(exist_ok=True)
+# Setup cfg variables
+cfg_app = app_config.get('App', {})
+cfg_getDomains = app_config.get('getDomains', {})
+cachefile = cfg_getDomains.get('cachefile') 
+cachetime = cfg_getDomains.get('cachetime')
+last_performed = cfg_getDomains.get('lastperformed')
+username = app_config.get('Namecheap', {}).get('username')
+apikey = app_config.get('Namecheap', {}).get('apikey')
+ipaddr = app_config.get('Client', {}).get('ipaddr')
 
-# Load configuration file
-if os.path.isfile(config_file):
-    config = configparser.ConfigParser()
-    config.read(config_file)
+def dprint(_content, _debug=cfg_app.get('debug')):
+    if (_content and type(_content)==str and _debug):
+        print(_content)
 
-    for section in app_config.keys():
-        sub_sections = app_config[section].keys()
-        for sub_section in sub_sections:
-            def_value = app_config[section][sub_section]
-            if section not in app_vals: app_vals[section] = {}
-            if section not in config.sections() or []: config.add_section(section)
-            config_value = None
-            if type(def_value) is bool:
-                config_value = config.getboolean(section, sub_section, fallback=def_value)
-                config.set(section, sub_section, str(config_value))
-            elif type(def_value) is int:
-                config_value = config.getint(section, sub_section, fallback=def_value)
-                config.set(section, sub_section, str(config_value))
-            elif type(def_value) is str:
-                config_value = config.get(section, sub_section, fallback=def_value)
-                config.set(section, sub_section, config_value)
-            elif type(def_value) is list:
-                config_value = json.loads(config.get(section, sub_section, fallback=json.dumps(def_value)))
-                config.set(section, sub_section, json.dumps(config_value))
-            app_vals[section][sub_section] = config_value
-            
-
-    # Write changes back to the file
-    with open(config_file, 'w') as configfile:
-        config.write(configfile)
-
-# Gather variables
-debug = app_vals['App']['debug']
-useLocal = app_vals['App']['useLocal']
-localFile = app_vals['App']['localFile']
-username = app_vals['Namecheap']['username']
-apikey = app_vals['Namecheap']['apikey']
-ipaddr = app_vals['Client']['ipaddr']
-apidomain = app_vals['getDomains']['apidomain']
-page = app_vals['getDomains']['page']
-pagesize = app_vals['getDomains']['pagesize']
-sortby = app_vals['getDomains']['sortby']
-colKeys = app_vals['getDomains']['colKeys']
+def prefill(str_in):
+    return f' ({str_in})' if str_in and type(str_in) == str else ''
 
 prompted = False
-if not username or username == app_config['Namecheap']['username']:
+if not username or username == app_defaults.get('Namecheap', {}).get('username'):
     prompted = True
     invalid = True
     while invalid:
-        username = input('Please enter your namecheap username: ')
+        user_name = input(f'Please enter your namecheap username{prefill(username)}: ')
+        username = username if not user_name and username else user_name
         if username: invalid = False
 
-if not apikey or apikey == app_config['Namecheap']['apikey']:
+if not apikey or apikey == app_defaults.get('Namecheap', {}).get('apikey'):
     prompted = True
     invalid = True
     while invalid:
-        apikey = input('Please enter your namecheap API key: ')
+        api_key = input(f'Please enter your namecheap API key{prefill(apikey)}: ')
+        apikey = apikey if not api_key and apikey else api_key
         if apikey: invalid = False
 
 if prompted:
-    if not ipaddr or ipaddr == app_config['Client']['ipaddr']:
+    if not ipaddr or ipaddr == app_defaults.get('Client', {}).get('ipaddr') or ipaddr != app_config.get('Client', {}).get('ipaddr'):
         invalid = True
         while invalid:
-            statement = 'enter' if not ipaddr or ipaddr == 'YOUR_IP_ADDRESSHERE' else 'confirm'
-            in_ipaddr = input(f'Please {statement} your IP address ({ipaddr}): ')
+            prefilled=prefill(ipaddr)
+            enter_confirm='confirm' if prefilled else 'enter'
+            in_ipaddr = input(f'Please {enter_confirm} your IP address{prefilled}: ')
             ipaddr = ipaddr if not in_ipaddr and ipaddr else in_ipaddr
             if ipaddr: invalid = False
     
@@ -130,6 +91,7 @@ if prompted:
             config.set('Namecheap', 'username', username)
             config.set('Namecheap', 'apikey', apikey)
             config.set('Client', 'ipaddr', ipaddr)
+
             # Write changes back to the file
             with open(config_file, 'w') as configfile:
                 config.write(configfile)
@@ -138,74 +100,62 @@ if prompted:
             print('Aborting...')
             quit()
 
+
+date_time_now = datetime.datetime.now()
+difference_s = (date_time_now - last_performed).total_seconds()
+usecachefile = cfg_app.get('uselocal') or difference_s < cachetime
+dprint(f'\nusecachefile: {usecachefile} ({difference_s}/{cachetime})\n')
+
+if not usecachefile:
+    # Write changes back to the file
+    config.set('getDomains', 'lastperformed', date_time_now.strftime(cfg_app.get('datetimeformat')))
+    with open(config_file, 'w') as configfile:
+        config.write(configfile)
+
 def genApiUrl(
     _apicommand, 
     _apikey=apikey, 
     _ipaddr=ipaddr,
     _username=username, 
-    _apidomain=apidomain,
-    _pagesize=pagesize,
-    _sortby=sortby
+    _apidomain=cfg_getDomains.get('apidomain'),
+    _page=cfg_getDomains.get('page'),
+    _pagesize=cfg_getDomains.get('pagesize'),
+    _sortby=cfg_getDomains.get('sortby')
 ):
     outStr=''
     if (_apicommand and _apikey and _ipaddr and _username and _apidomain):
         urlArr = [
-            "https://",
-            _apidomain,
-            "/xml.response?ApiUser=",
-            _username,
-            "&ApiKey=",
-            _apikey,
-            "&UserName=",
-            _username,
-            "&Command=",
-            _apicommand,
-            "&ClientIp=",
-            _ipaddr,
-            "&PageSize=",
-            _pagesize,
-            "&SortBy=",
-            _sortby
+            f'https://{_apidomain}/xml.response?',
+            f'ApiUser={_username}',
+            f'&ApiKey={_apikey}'
+            f'&UserName={_username}',
+            f'&Command={_apicommand}',
+            f'&ClientIp={_ipaddr}',
+            f'&Page={_page}',
+            f'&PageSize={_pagesize}',
+            f'&SortBy={_sortby}'
         ]
         for x in urlArr:
-            outStr=outStr+str(x)
+            outStr=f'{outStr}{str(x)}'
     else:
-        if (debug):
-            errorPretxt='Problem with genApiUrl: '
-            if (not _apicommand): print(errorPretxt+'Missing api command')
-            if (not _apikey): print(errorPretxt+'Missing api key')
-            if (not _ipaddr): print(errorPretxt+'Missing api client ip')
-            if (not _username): print(errorPretxt+'Missing api username')
-            if (not _apidomain): print(errorPretxt+'Missing api domain')
-    return outStr
-
+        pretxt='Problem with genApiUrl: '
+        if (not _apicommand): print(f'{pretxt} Missing api command')
+        if (not _apikey): print(f'{pretxt} Missing api key')
+        if (not _ipaddr): print(f'{pretxt} Missing api client ip')
+        if (not _username): print(f'{pretxt} Missing api username')
+        if (not _apidomain): print(f'{pretxt} Missing api domain')
+    return outStr if outStr else None
 
 def getDomains(
-    _print=False,
-    _fromLocal=False,
-    _colKeys=colKeys,
-    _debug=debug
+    _fromLocal=cfg_app.get('uselocal', False),
+    _colKeys=cfg_getDomains.get('colKeys', []),
+    _apicommand=cfg_getDomains.get('apicommand', '')
 ):
-    apicommand='namecheap.domains.getList'
-
-    def doPrint(_content, _shouldPrint=_print, _debug=_debug):
-        if (_debug or (_content and type(_content)==str and _shouldPrint)):
-            print(_content)
-    def formatKeys(_arrIn=[]):
-        output=['#']
-        if (_arrIn and type(_arrIn) == list):
-            for x in _arrIn:
-                if (x and type(x) == str):
-                    output.append(x[1:])
-        return output
-    
-    
     jsonResponse = None
-    if (not _fromLocal):
-        url = genApiUrl(apicommand)
-        doPrint(url, False)
-        if (_debug):
-            print(url)    
+    if (not _fromLocal or not cachefile):
+        dprint('Gathering from request')
+        url = genApiUrl(_apicommand)
+        dprint(url)    
         if (not url):
             return -1      
 
@@ -220,11 +170,16 @@ def getDomains(
             return -1
 
         jsonResponse = json.dumps(xmltodict.parse(response.text))
+        # Create file if doesn't exist
+        if not os.path.isfile(cachefile):
+            pathlib.Path(cachefile).touch(exist_ok=True)
+        # Write response to cachefile
+        with open(cachefile, 'w') as cf:
+            json.dump(jsonResponse, cf)
     else:
-        f=open('getDomainsOutput.txt','r')
-        fileRead=f.read()
-        jsonResponse = json.dumps(xmltodict.parse(fileRead))
-    
+        dprint('Gathering from local cachefile')
+        with open(cachefile, "r") as f:
+            jsonResponse = json.load(f)
 
     def keyExist(_dict,_key):
         if _key in _dict.keys():
@@ -243,49 +198,57 @@ def getDomains(
             if (_cell=='true' or _cell=='ENABLED'): return 'x'
             if (_cell=='false' or _cell=='DISABLED'): return '-'
             return _cell
-        else:
-            doPrint('Issue with cell input')
+        dprint('Issue with cell input')
         return ''
 
     if (jsonResponse):
         loadedJson = json.loads(jsonResponse)
-        doPrint('loadedJson', False)
-        doPrint(loadedJson, False)
-        domainArr = loadedJson['ApiResponse']['CommandResponse']['DomainGetListResult']['Domain']
+        domainArr = None
+        try:
+            api_response = loadedJson.get('ApiResponse', {})
+            status = api_response.get('@Status')
+            if status == 'ERROR':
+                print(f'\nResponse: {json.dumps(api_response)}\n')
+                return -1
+            else:
+                domainArr = api_response.get('CommandResponse', {}).get('DomainGetListResult', {}).get('Domain')
+        except:
+            print('Error loading domain data')
+            return -1
 
         numCount=1
         d=[]
-        for x in domainArr:        
-            if (checkKeysExist(x, _colKeys)):
-                e=[numCount]
-                for y in _colKeys:
-                    e.append(cellFormat(x[y]))
-                d.append(e)
-                numCount+=1
-            else:
-                if (_debug):
-                    print("Issue with "+str(x)+" - Missing a required property")
+        if type(domainArr) == list:
+            for x in domainArr:        
+                if (checkKeysExist(x, _colKeys)):
+                    e=[numCount]
+                    for y in _colKeys:
+                        e.append(cellFormat(x[y]))
+                    d.append(e)
+                    numCount+=1
+                else:
+                    print(f'Issue with {str(x)} - Missing a required property')
         
-        print('')
-        doPrint(tabulate(d, headers=formatKeys(_colKeys)))
-        print('')
         return d
-    doPrint('Error with json response\n')
+    print('Error with json response\n')
     return -1
 
-
-
-# getDomains(print?,local file?,debug?)
-#
-# add 'print' to print out tabulated domain list
-# 2nd param passed in is a local file if you wish 
-# to work with a local save instead of pulling from namecheap
-if (useLocal):
-    domainsArr=getDomains('print', localFile)  
-else:
-    domainsArr=getDomains('print')  
-
-
-if (debug):
-    print(domainsArr)
+# Print out domains
+domainsArr=getDomains(usecachefile)
+if domainsArr == -1: quit()
+if (type(domainsArr == list) and domainsArr):
     print('')
+
+    dprint(f'{json.dumps(domainsArr)}\n')
+    def formatKeys(_arrIn=[]):
+        output=['#']
+        if (_arrIn and type(_arrIn) == list):
+            for x in _arrIn:
+                if (x and type(x) == str):
+                    output.append(x[1:])
+        return output
+    print(tabulate(domainsArr, headers=formatKeys(cfg_getDomains.get('colKeys'))))
+    
+    print('')
+else:
+    print('Nothing to print')
