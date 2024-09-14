@@ -1,3 +1,4 @@
 *.ini
 archived
-
+cache
+__pycache__
